@@ -17,6 +17,7 @@ bench = false
 
 [dependencies]
 janetrs = { version = "0.8.0", default-features = false, features = ["std", "unicode"] }
+libsql = "0.9.30"
 
 [features]
 default = ["system-janet"]
