@@ -1,0 +1,14 @@
+#! /usr/bin/env janet
+
+(print "Running Tests")
+
+(os/execute @["jpm" "clean"] :p)
+(os/execute @["jpm" "build"] :p)
+
+(import ./build/hydra)
+
+(hydra/open-local-db ":memory:")
+
+(hydra/open-local-db "./test.db")
+
+(print "Finished Running Tests")

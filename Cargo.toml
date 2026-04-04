@@ -1,8 +1,8 @@
 [package]
-name = "template"
+name = "hydra"
 version = "0.1.0"
-authors = ["Author <email@provider.com>"]
-edition = "2021"
+authors = ["Author pxp.phillips@gmail.com"]
+edition = "2024"
 
 [profile.dev]
 panic = "abort"
@@ -16,6 +16,7 @@ crate-type = ["cdylib", "staticlib"]
 bench = false
 
 [dependencies]
+futures = "0.3.32"
 janetrs = { version = "0.8.0", default-features = false, features = ["std", "unicode"] }
 libsql = "0.9.30"
 

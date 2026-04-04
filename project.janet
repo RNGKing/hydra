@@ -1,5 +1,5 @@
 (declare-project
-  :name "template")
+  :name "hydra")
 
 (defn declare-rust
   "Declare a native Rust module."
@@ -74,6 +74,6 @@
 
 
 (declare-rust
-  :name "template"
+  :name "hydra"
   :cargo-extra-args [])
 
