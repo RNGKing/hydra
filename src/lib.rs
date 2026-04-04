@@ -2,7 +2,7 @@ use std::mem::ManuallyDrop;
 
 use futures::executor;
 use janetrs::{
-    IsJanetAbstract, Janet, TaggedJanet, declare_janet_mod, janet_fn, jpanic,
+    IsJanetAbstract, Janet, JanetAbstract, TaggedJanet, declare_janet_mod, janet_fn, jpanic,
     lowlevel::JanetAbstractType,
 };
 
@@ -39,6 +39,29 @@ unsafe impl IsJanetAbstract for LibsqlDatabaseConnection {
     }
 }
 
+fn handle_libsql_db_connection(janet_args: &mut [Janet], db_builder: libsql::Builder) -> Janet {
+    let db_url = match janet_args.get(0) {
+        Some(item) => match item.unwrap() {
+            TaggedJanet::String(url) => url.to_string(),
+            _ => jpanic!("First argument must be a string"),
+        },
+        None => jpanic!("open-local-db takes one argument. Must be a valid url or :memory:"),
+    };
+    let db_fut = w_local(&db_url).build();
+    match executor::block_on(db_fut) {
+        Ok(db) => {
+            let conn = match db.connect() {
+                Ok(db_conn) => db_conn,
+                Err(_) => jpanic!("Failed to connect to database."),
+            };
+            let db_struct = LibsqlDatabaseConnection { db: db, conn: conn };
+            let j_abstract = JanetAbstract::new(db_struct);
+            Janet::j_abstract(j_abstract)
+        }
+        Err(_) => jpanic!("Error while accessing database"),
+    }
+}
+
 #[janet_fn(arity(fix(1)))]
 fn open_local_db(args: &mut [Janet]) -> Janet {
     let db_url = match args.get(0) {
@@ -51,10 +74,13 @@ fn open_local_db(args: &mut [Janet]) -> Janet {
     let db_fut = libsql::Builder::new_local(&db_url).build();
     match executor::block_on(db_fut) {
         Ok(db) => {
-            let _db_msg = db.connect();
-            let msg = format!("Database created at {}", &db_url);
-            println!("{}", msg);
-            Janet::nil()
+            let conn = match db.connect() {
+                Ok(db_conn) => db_conn,
+                Err(_) => jpanic!("Failed to connect to database."),
+            };
+            let db_struct = LibsqlDatabaseConnection { db: db, conn: conn };
+            let j_abstract = JanetAbstract::new(db_struct);
+            Janet::j_abstract(j_abstract)
         }
         Err(_) => jpanic!("Error while accessing database"),
     }

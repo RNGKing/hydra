@@ -2,6 +2,8 @@
 
 (print "Running Tests")
 
+(if (not= (os/stat "./test.db") nil)  
+  (os/rm "./test.db"))
 (os/execute @["jpm" "clean"] :p)
 (os/execute @["jpm" "build"] :p)
 
