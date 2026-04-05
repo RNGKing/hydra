@@ -9,8 +9,14 @@
 
 (import ./build/hydra)
 
-(hydra/open-local-db ":memory:")
+(def local-db
+  (hydra/open-local-db ":memory:"))
 
-(hydra/open-local-db "./test.db")
+(hydra/execute local-db "select 1" @[])
+
+(def test-db
+  (hydra/open-local-db "./test.db"))
+
+(hydra/execute test-db "select 1" @[])
 
 (print "Finished Running Tests")
