@@ -1,22 +1,55 @@
 #! /usr/bin/env janet
 
-(print "Running Tests")
+(def clean_arg
+  (get (dyn :args) 1))
 
-(if (not= (os/stat "./test.db") nil)  
-  (os/rm "./test.db"))
-(os/execute @["jpm" "clean"] :p)
+(defn clean-build []
+  (print "cleaning")
+  (if (not= (os/stat "./test.db") nil)
+    (os/rm "./test.db"))
+  (os/execute @["jpm" "clean"] :p))
+
+(if (= clean_arg "clean")
+  (clean-build))
+
 (os/execute @["jpm" "build"] :p)
 
-(import ./build/hydra)
+(import ./build/hydra :as db)
 
-(def local-db
-  (hydra/open-local-db ":memory:"))
+(print "OPENING IN MEMORY DATABASE")
+(var in-memory-local
+  (db/open-local-db ":memory:"))
 
-(hydra/execute local-db "select 1" @[])
+(print in-memory-local)
 
-(def test-db
-  (hydra/open-local-db "./test.db"))
+(print "RUNNING IN MEMORY TEST")
+(print "CREATING TABLE")
+(db/execute in-memory-local "create table users (email TEXT);" @[])
+(print "TABLE CREATED")
+(print "")
 
-(hydra/execute test-db "select 1" @[])
+(print in-memory-local)
 
-(print "Finished Running Tests")
+(print "INSERTING VALUES INTO TABLE")
+(db/execute in-memory-local
+  "insert into users (email) values (?1),(?2),(?3);"
+  @["testone@test.com" "testtwo@test.com" "testthree@test.com"])
+
+(print "OPENING IN DISK DATABASE")
+(var in-disk-local
+  (db/open-local-db "./test.db"))
+
+(print in-disk-local)
+
+(print "RUNNING IN DISK TEST")
+(print "CREATING TABLE")
+(db/execute in-disk-local "create table users (email TEXT);" @[])
+(print "TABLE CREATED")
+(print "")
+
+(print in-disk-local)
+
+(print "INSERTING VALUES INTO TABLE")
+(db/execute in-disk-local
+  "insert into users (email) values (?1),(?2),(?3);"
+  @["testone@test.com" "testtwo@test.com" "testthree@test.com"])
