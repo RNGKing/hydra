@@ -2,8 +2,8 @@ use std::{ffi::c_void, mem::ManuallyDrop};
 
 use futures::executor;
 use janetrs::{
-    IsJanetAbstract, Janet, JanetAbstract, TaggedJanet, declare_janet_mod, janet_fn, jpanic,
-    lowlevel::JanetAbstractType,
+    IsJanetAbstract, Janet, JanetAbstract, JanetArray, TaggedJanet, declare_janet_mod, janet_fn,
+    jpanic, lowlevel::JanetAbstractType,
 };
 use libsql::{Database, params::IntoValue, params_from_iter};
 
@@ -30,39 +30,16 @@ struct LibsqlDatabaseConnection {
     conn: libsql::Connection,
 }
 
-unsafe extern "C" fn libsql_gc(input: *mut c_void, size: usize) -> i32 {
-    let db_struct: &mut LibsqlDatabaseConnection = unsafe {
-        let db = input.cast::<LibsqlDatabaseConnection>();
-        &mut *db
-    };
-    0
-}
-
-unsafe impl IsJanetAbstract for LibsqlDatabaseConnection {
-    type Get = Self;
-    const SIZE: usize = size_of::<Self>();
-    fn type_info() -> &'static janetrs::lowlevel::JanetAbstractType {
-        let name_ptr = b"LibdqlDatabaseConnection\0".as_ptr();
-        let output_ptr = name_ptr as *const i8;
-        let abstract_type = JanetAbstractType {
-            name: output_ptr,
-            gc: None,
-            gcmark: None,
-            get: None,
-            put: None,
-            marshal: None,
-            unmarshal: None,
-            tostring: None,
-            compare: None,
-            hash: None,
-            next: None,
-            call: None,
-            length: None,
-            bytes: None,
-            gcperthread: None,
-        };
-        let boxed = Box::new(abstract_type);
-        Box::leak(boxed)
+impl LibsqlDatabaseConnection {
+    pub fn new_from_janet_abstract(
+        input: JanetAbstract,
+    ) -> Result<Box<LibsqlDatabaseConnection>, String> {
+        match input.into_inner::<Box<LibsqlDatabaseConnection>>() {
+            Ok(output) => Ok(output),
+            Err(_) => Err(
+                "Failed to convert Janet Abstract type into LibsqlDatabaseConnection".to_string(),
+            ),
+        }
     }
 }
 
@@ -94,6 +71,29 @@ unsafe impl IsJanetAbstract for Box<LibsqlDatabaseConnection> {
     }
 }
 
+impl From<Option<Janet>> for Box<LibsqlDatabaseConnection> {
+    fn from(value: Option<Janet>) -> Self {
+        match value {
+            Some(j_object) => {
+                let j_abstract = match j_object.unwrap() {
+                    TaggedJanet::Abstract(item) => item,
+                    _ => jpanic!(
+                        "A LibsqlDatabaseConnection can only be formed from a Abstract Janet type."
+                    ),
+                };
+                let result = j_abstract.into_inner::<Box<LibsqlDatabaseConnection>>();
+                if result.is_err() {
+                    jpanic!("Coult not retrieve database connection from arguments")
+                }
+                result.unwrap()
+            }
+            None => {
+                jpanic!("There is no argument present to convert into LibsqlDatabaseConnection")
+            }
+        }
+    }
+}
+
 fn handle_libsql_db_connection(janet_args: &mut [Janet], db_builder: libsql::Builder) -> Janet {
     /*
     let db_url = match janet_args.get(0) {
@@ -118,6 +118,61 @@ fn handle_libsql_db_connection(janet_args: &mut [Janet], db_builder: libsql::Bui
     }
     */
     Janet::nil()
+}
+
+fn try_get_janet_abstract(args: &mut [Janet], index: usize) -> Result<JanetAbstract, String> {
+    match args.get(index) {
+        Some(j_object) => match j_object.unwrap() {
+            TaggedJanet::Abstract(item) => Ok(item),
+            _ => {
+                let err_msg_type = format!(
+                    "Janet argument at {} is not the type of Janet Abstract",
+                    index
+                );
+                Err(err_msg_type)
+            }
+        },
+        None => {
+            let err_msg = format!("No janet argument at index {}", index);
+            Err(err_msg)
+        }
+    }
+}
+
+fn try_get_janet_string(args: &mut [Janet], index: usize) -> Result<String, String> {
+    match args.get(index) {
+        Some(j_object) => match j_object.unwrap() {
+            TaggedJanet::String(j_string) => Ok(j_string.to_string()),
+            _ => {
+                let err_msg_type = format!(
+                    "Janet argument at {} is not the type of Janet String",
+                    index
+                );
+                Err(err_msg_type)
+            }
+        },
+        None => {
+            let err_msg = format!("No janet argument at index {}", index);
+            Err(err_msg)
+        }
+    }
+}
+
+fn try_get_janet_array(args: &mut [Janet], index: usize) -> Result<JanetArray<'_>, String> {
+    match args.get(index) {
+        Some(j_object) => match j_object.unwrap() {
+            TaggedJanet::Array(arr) => Ok(arr),
+            _ => {
+                let err_msg_type =
+                    format!("Janet argument at {} is not the type of Janet Array", index);
+                Err(err_msg_type)
+            }
+        },
+        None => {
+            let err_msg = format!("No janet argument at index {}", index);
+            Err(err_msg)
+        }
+    }
 }
 
 #[janet_fn(arity(fix(1)))]
@@ -157,25 +212,42 @@ fn close_db(_args: &mut [Janet]) -> Janet {
     Janet::nil()
 }
 
+fn handle_execute_internal(args: &mut [Janet]) -> Result<Janet, String> {
+    let abstract_db = try_get_janet_abstract(args, 0)?;
+    let query_string = try_get_janet_string(args, 1)?;
+    let query_args = try_get_janet_array(args, 2)?;
+    let libsql_db_struct = LibsqlDatabaseConnection::new_from_janet_abstract(abstract_db)?;
+    let arguments = query_args.iter().map(|item| match item.unwrap() {
+        TaggedJanet::String(string_arg) => string_arg.to_string(),
+        TaggedJanet::Number(num_arg) => num_arg.to_string(),
+        _ => jpanic!("WE SUCK"),
+    });
+    let exec_fut = libsql_db_struct
+        .conn
+        .execute(&query_string, params_from_iter(arguments));
+
+    match executor::block_on(exec_fut) {
+        Ok(_) => {
+            Box::leak(libsql_db_struct);
+            Ok(Janet::nil())
+        }
+        Err(err) => {
+            Box::leak(libsql_db_struct);
+            let err_msg = format!("Error while executing query : {}", err.to_string());
+            Err(err_msg.to_string())
+        }
+    }
+}
+
 #[janet_fn(arity(fix(3)))]
 fn execute(args: &mut [Janet]) -> Janet {
-    let db_struct = match args.get(0) {
-        Some(j_object) => {
-            let j_abstract: JanetAbstract = match j_object.unwrap() {
-                TaggedJanet::Abstract(item) => item,
-                _ => jpanic!("Expected first argument to be a janet type of Absract Janet"),
-            };
+    match handle_execute_internal(args) {
+        Ok(output) => output,
+        Err(err) => jpanic!("{}", err),
+    }
+    /*
+    let db try_get_janet_abstract(args, 0);
 
-            let result = j_abstract.into_inner::<Box<LibsqlDatabaseConnection>>();
-            if result.is_err() {
-                jpanic!("Coult not retrieve database connection from arguments")
-            }
-            result.unwrap()
-        }
-        None => jpanic!(
-            "Expecting three arguments. First is a db reference, second is the query, third is an array of query variables."
-        ),
-    };
 
     let execute_query: String = match args.get(1) {
         Some(j_object) => {
@@ -190,7 +262,7 @@ fn execute(args: &mut [Janet]) -> Janet {
         ),
     };
 
-    let parameter_array = match args.get(2) {
+    let parameter_array : Array = match args.get(2) {
         Some(j_object) => {
             let j_array = match j_object.unwrap() {
                 TaggedJanet::Array(arr) => arr,
@@ -223,6 +295,7 @@ fn execute(args: &mut [Janet]) -> Janet {
     };
     Box::leak(db_struct);
     result
+    */
 }
 
 #[janet_fn(arity(fix(3)))]
