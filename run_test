@@ -39,7 +39,7 @@
 
 (print "RUNNING IN DISK TEST")
 (print "CREATING TABLE")
-(db/execute in-disk-local "create table users (email TEXT);" @[])
+(db/execute in-disk-local "create table users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT);" @[])
 (print "TABLE CREATED")
 (print "")
 
@@ -48,8 +48,10 @@
   "insert into users (email) values (?1),(?2),(?3);"
   @["testone@test.com" "testtwo@test.com" "testthree@test.com"])
 
-(each entry
-  (db/query in-disk-local
-    "select * from users;"
-    @[])
-    (each item entry (print item)))
+(print "QUERYING TABLE")
+(def query-result
+  (db/query in-disk-local "select * from users where id > ?1" @[1]))
+
+(each row query-result
+  (print (get row 0) " | " (get row 1)))
+ 

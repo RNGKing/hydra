@@ -1,31 +1,9 @@
-use std::{ffi::c_void, mem::ManuallyDrop, str::FromStr};
-
 use futures::executor;
 use janetrs::{
-    IsJanetAbstract, Janet, JanetAbstract, JanetArray, JanetBuffer, JanetString, JanetTuple,
-    TaggedJanet, declare_janet_mod, janet_fn, jpanic, lowlevel::JanetAbstractType,
-    tuple::JanetTupleBuilder,
+    IsJanetAbstract, Janet, JanetAbstract, JanetArray, JanetBuffer, JanetString, TaggedJanet,
+    declare_janet_mod, janet_fn, jpanic, lowlevel::JanetAbstractType,
 };
-use libsql::{Database, params::IntoValue, params_from_iter};
-
-struct JanetTypeToLibsqlValueWrapper(Janet);
-
-impl IntoValue for JanetTypeToLibsqlValueWrapper {
-    fn into_value(self) -> libsql::Result<libsql::Value> {
-        match self.0.unwrap() {
-            TaggedJanet::String(janet_string) => {
-                let string_arg = janet_string.to_string();
-                let out_value = libsql::Value::Text(string_arg);
-                Ok(out_value)
-            }
-            TaggedJanet::Number(janet_number) => {
-                let out_value = libsql::Value::Real(janet_number);
-                Ok(out_value)
-            }
-            _ => jpanic!("Input must be a string, int or number"),
-        }
-    }
-}
+use libsql::params_from_iter;
 
 struct LibsqlDatabaseConnection {
     conn: libsql::Connection,
@@ -93,32 +71,6 @@ impl From<Option<Janet>> for Box<LibsqlDatabaseConnection> {
             }
         }
     }
-}
-
-fn handle_libsql_db_connection(janet_args: &mut [Janet], db_builder: libsql::Builder) -> Janet {
-    /*
-    let db_url = match janet_args.get(0) {
-        Some(item) => match item.unwrap() {
-            TaggedJanet::String(url) => url.to_string(),
-            _ => jpanic!("First argument must be a string"),
-        },
-        None => jpanic!("open-local-db takes one argument. Must be a valid url or :memory:"),
-    };
-    let db_fut = w_local(&db_url).build();
-    match executor::block_on(db_fut) {
-        Ok(db) => {
-            let conn = match db.connect() {
-                Ok(db_conn) => db_conn,
-                Err(_) => jpanic!("Failed to connect to database."),
-            };
-            let db_struct = LibsqlDatabaseConnection { db: db, conn: conn };
-            let j_abstract = JanetAbstract::new(db_struct);
-            Janet::j_abstract(j_abstract)
-        }
-        Err(_) => jpanic!("Error while accessing database"),
-    }
-    */
-    Janet::nil()
 }
 
 fn try_get_janet_abstract(args: &mut [Janet], index: usize) -> Result<JanetAbstract, String> {
@@ -269,29 +221,6 @@ fn handle_query_internal(args: &mut [Janet]) -> Result<Janet, String> {
     match executor::block_on(query_fut) {
         Ok(mut rows) => {
             let mut output_list = JanetArray::new();
-            /*
-            while let Ok(opt_row) = executor::block_on(rows.next()) {
-                if let Some(row) = opt_row {
-                    let col_count = row.column_count();
-                    let capacity = col_count as usize;
-                    let mut row_j_array = JanetArray::with_capacity(capacity);
-
-                    for idx in 0..col_count {
-                        match row.get_value(idx) {
-                            Ok(val) => {
-                                let mapped_value = map_libsql_to_janet(val);
-                                row_j_array.push(mapped_value);
-                            }
-                            Err(_) => jpanic!(
-                                "Unexpected index into columns found while querying returned table. Offending index: {}",
-                                idx
-                            ),
-                        }
-                    }
-                    output_list.push(Janet::array(row_j_array));
-                }
-            }
-            */
             while let Ok(opt_row) = executor::block_on(rows.next()) {
                 if let Some(row) = opt_row {
                     let col_count = row.column_count();
