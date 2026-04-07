@@ -1,9 +1,10 @@
-use std::{ffi::c_void, mem::ManuallyDrop};
+use std::{ffi::c_void, mem::ManuallyDrop, str::FromStr};
 
 use futures::executor;
 use janetrs::{
-    IsJanetAbstract, Janet, JanetAbstract, JanetArray, TaggedJanet, declare_janet_mod, janet_fn,
-    jpanic, lowlevel::JanetAbstractType,
+    IsJanetAbstract, Janet, JanetAbstract, JanetArray, JanetBuffer, JanetString, JanetTuple,
+    TaggedJanet, declare_janet_mod, janet_fn, jpanic, lowlevel::JanetAbstractType,
+    tuple::JanetTupleBuilder,
 };
 use libsql::{Database, params::IntoValue, params_from_iter};
 
@@ -197,11 +198,6 @@ fn open_local_db(args: &mut [Janet]) -> Janet {
     }
 }
 
-#[janet_fn(arity(fix(1)))]
-fn open_sync_db(_args: &mut [Janet]) -> Janet {
-    Janet::nil()
-}
-
 #[janet_fn(arity(fix(2)))]
 fn open_remote_db(_args: &mut [Janet]) -> Janet {
     Janet::nil()
@@ -216,12 +212,14 @@ fn handle_execute_internal(args: &mut [Janet]) -> Result<Janet, String> {
     let abstract_db = try_get_janet_abstract(args, 0)?;
     let query_string = try_get_janet_string(args, 1)?;
     let query_args = try_get_janet_array(args, 2)?;
-    let libsql_db_struct = LibsqlDatabaseConnection::new_from_janet_abstract(abstract_db)?;
     let arguments = query_args.iter().map(|item| match item.unwrap() {
         TaggedJanet::String(string_arg) => string_arg.to_string(),
         TaggedJanet::Number(num_arg) => num_arg.to_string(),
-        _ => jpanic!("WE SUCK"),
+        _ => jpanic!("Must be a number or a string as an argument."),
     });
+
+    let libsql_db_struct = LibsqlDatabaseConnection::new_from_janet_abstract(abstract_db)?;
+
     let exec_fut = libsql_db_struct
         .conn
         .execute(&query_string, params_from_iter(arguments));
@@ -239,73 +237,107 @@ fn handle_execute_internal(args: &mut [Janet]) -> Result<Janet, String> {
     }
 }
 
+fn map_libsql_to_janet(input: libsql::Value) -> Janet {
+    match input {
+        libsql::Value::Integer(int_val) => Janet::int64(int_val),
+        libsql::Value::Real(real_value) => Janet::number(real_value),
+        libsql::Value::Text(text) => Janet::string(JanetString::new(text.as_bytes())),
+        libsql::Value::Null => Janet::nil(),
+        libsql::Value::Blob(data) => {
+            let buffer = JanetBuffer::from_iter(data.iter());
+            Janet::buffer(buffer)
+        }
+    }
+}
+
+fn handle_query_internal(args: &mut [Janet]) -> Result<Janet, String> {
+    let abstract_db = try_get_janet_abstract(args, 0)?;
+    let query_string = try_get_janet_string(args, 1)?;
+    let query_args = try_get_janet_array(args, 2)?;
+    let arguments = query_args.iter().map(|item| match item.unwrap() {
+        TaggedJanet::String(string_arg) => string_arg.to_string(),
+        TaggedJanet::Number(num_arg) => num_arg.to_string(),
+        _ => jpanic!("Must be a number or a string as an argument."),
+    });
+
+    let libsql_db_struct = LibsqlDatabaseConnection::new_from_janet_abstract(abstract_db)?;
+
+    let query_fut = libsql_db_struct
+        .conn
+        .query(&query_string, params_from_iter(arguments));
+
+    match executor::block_on(query_fut) {
+        Ok(mut rows) => {
+            let mut output_list = JanetArray::new();
+            /*
+            while let Ok(opt_row) = executor::block_on(rows.next()) {
+                if let Some(row) = opt_row {
+                    let col_count = row.column_count();
+                    let capacity = col_count as usize;
+                    let mut row_j_array = JanetArray::with_capacity(capacity);
+
+                    for idx in 0..col_count {
+                        match row.get_value(idx) {
+                            Ok(val) => {
+                                let mapped_value = map_libsql_to_janet(val);
+                                row_j_array.push(mapped_value);
+                            }
+                            Err(_) => jpanic!(
+                                "Unexpected index into columns found while querying returned table. Offending index: {}",
+                                idx
+                            ),
+                        }
+                    }
+                    output_list.push(Janet::array(row_j_array));
+                }
+            }
+            */
+            while let Ok(opt_row) = executor::block_on(rows.next()) {
+                if let Some(row) = opt_row {
+                    let col_count = row.column_count();
+                    let capacity: usize = col_count as usize;
+                    let mut row_j_array = JanetArray::with_capacity(capacity);
+                    for idx in 0..col_count {
+                        if let Ok(val) = row.get_value(idx) {
+                            let mapped = map_libsql_to_janet(val);
+                            row_j_array.push(mapped);
+                        }
+                    }
+                    output_list.push(Janet::array(row_j_array));
+                } else {
+                    break;
+                }
+            }
+            Box::leak(libsql_db_struct);
+            Ok(Janet::array(output_list))
+        }
+        Err(err) => {
+            Box::leak(libsql_db_struct);
+            let err_msg = format!("Error while performing query : {}", err.to_string());
+            Err(err_msg.to_string())
+        }
+    }
+}
+
 #[janet_fn(arity(fix(3)))]
 fn execute(args: &mut [Janet]) -> Janet {
+    // get the boxed value here ... then leak it after we're done with it
     match handle_execute_internal(args) {
         Ok(output) => output,
         Err(err) => jpanic!("{}", err),
     }
-    /*
-    let db try_get_janet_abstract(args, 0);
-
-
-    let execute_query: String = match args.get(1) {
-        Some(j_object) => {
-            let j_string = match j_object.unwrap() {
-                TaggedJanet::String(item) => item.to_string(),
-                _ => jpanic!("Expected second argument to be a string"),
-            };
-            j_string
-        }
-        None => jpanic!(
-            "Expecting three arguments. First is a db reference, second is the query, third is an array of query variables"
-        ),
-    };
-
-    let parameter_array : Array = match args.get(2) {
-        Some(j_object) => {
-            let j_array = match j_object.unwrap() {
-                TaggedJanet::Array(arr) => arr,
-                _ => jpanic!("Expected third argument to be an array"),
-            };
-            j_array
-        }
-        None => jpanic!(
-            "Execpted three arguments, First is a db reference, second is the query, third is an array of parameters"
-        ),
-    };
-
-    let arguments = parameter_array.iter().map(|item| match item.unwrap() {
-        TaggedJanet::String(string_arg) => string_arg.to_string(),
-        TaggedJanet::Number(num_arg) => num_arg.to_string(),
-        _ => jpanic!("WE SUCK"),
-    });
-    println!("FROM RUST BEFORE WE TRY TO EXECUTE {}", &execute_query);
-
-    let exec_fut = db_struct
-        .conn
-        .execute(&execute_query, params_from_iter(arguments));
-
-    let result = match executor::block_on(exec_fut) {
-        Ok(_) => Janet::nil(),
-        Err(err) => {
-            let msg = format!("ERROR -> {}", err.to_string());
-            jpanic!("{}", msg)
-        }
-    };
-    Box::leak(db_struct);
-    result
-    */
 }
 
 #[janet_fn(arity(fix(3)))]
-fn query(_args: &mut [Janet]) -> Janet {
-    Janet::nil()
+fn query(args: &mut [Janet]) -> Janet {
+    match handle_query_internal(args) {
+        Ok(output) => output,
+        Err(err) => jpanic!("{}", err),
+    }
 }
 
 declare_janet_mod!("hydra";
     {"open-local-db", open_local_db},
-    {"open-sync-db", open_sync_db},
     {"open-remote-db", open_remote_db},
     {"close-db", close_db},
     {"execute", execute},

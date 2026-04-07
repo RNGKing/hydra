@@ -5,12 +5,14 @@
 
 (defn clean-build []
   (print "cleaning")
-  (if (not= (os/stat "./test.db") nil)
-    (os/rm "./test.db"))
-  (os/execute @["jpm" "clean"] :p))
+    (os/execute @["jpm" "clean"] :p))
+
 
 (if (= clean_arg "clean")
   (clean-build))
+
+(if (not= (os/stat "./test.db") nil)
+    (os/rm "./test.db"))
 
 (os/execute @["jpm" "build"] :p)
 
@@ -20,15 +22,11 @@
 (var in-memory-local
   (db/open-local-db ":memory:"))
 
-(print in-memory-local)
-
 (print "RUNNING IN MEMORY TEST")
 (print "CREATING TABLE")
 (db/execute in-memory-local "create table users (email TEXT);" @[])
 (print "TABLE CREATED")
 (print "")
-
-(print in-memory-local)
 
 (print "INSERTING VALUES INTO TABLE")
 (db/execute in-memory-local
@@ -39,17 +37,19 @@
 (var in-disk-local
   (db/open-local-db "./test.db"))
 
-(print in-disk-local)
-
 (print "RUNNING IN DISK TEST")
 (print "CREATING TABLE")
 (db/execute in-disk-local "create table users (email TEXT);" @[])
 (print "TABLE CREATED")
 (print "")
 
-(print in-disk-local)
-
 (print "INSERTING VALUES INTO TABLE")
 (db/execute in-disk-local
   "insert into users (email) values (?1),(?2),(?3);"
   @["testone@test.com" "testtwo@test.com" "testthree@test.com"])
+
+(each entry
+  (db/query in-disk-local
+    "select * from users;"
+    @[])
+    (each item entry (print item)))
