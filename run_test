@@ -33,6 +33,15 @@
   "insert into users (email) values (?1),(?2),(?3);"
   @["testone@test.com" "testtwo@test.com" "testthree@test.com"])
 
+(print "")
+(print "CLOSING IN MEMORY CONNECTION")
+(db/close-db in-memory-local)
+
+(protect
+  (db/execute in-memory-local
+    "create table users(email TEXT);" @[])
+    (print "expected failure..."))
+
 (print "OPENING IN DISK DATABASE")
 (var in-disk-local
   (db/open-local-db "./test.db"))
@@ -52,6 +61,18 @@
 (def query-result
   (db/query in-disk-local "select * from users where id > ?1" @[1]))
 
+(print "  ID  " "  |  "  "  email")
 (each row query-result
-  (print (get row 0) " | " (get row 1)))
+    (print (get row 0) " | " (get row 1)))
  
+(print "")
+(print "CLOSING DATABASE")
+(db/close-db in-disk-local)
+
+(protect
+  (db/execute in-disk-local "create table test (value TEXT);" @[])
+  (print "FAILED"))
+
+(file/read stdin :line)
+
+(print "ENDING TEST")

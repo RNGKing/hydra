@@ -1,3 +1,5 @@
+use std::{fmt::Pointer, ops::Deref};
+
 use futures::executor;
 use janetrs::{
     IsJanetAbstract, Janet, JanetAbstract, JanetArray, JanetBuffer, JanetString, TaggedJanet,
@@ -5,8 +7,9 @@ use janetrs::{
 };
 use libsql::params_from_iter;
 
-struct LibsqlDatabaseConnection {
-    conn: libsql::Connection,
+enum LibsqlDatabaseConnection {
+    DbOpen(libsql::Connection),
+    DbClose,
 }
 
 impl LibsqlDatabaseConnection {
@@ -142,7 +145,7 @@ fn open_local_db(args: &mut [Janet]) -> Janet {
     match executor::block_on(db_fut) {
         Ok(db) => {
             let connection = db.connect().unwrap();
-            let db_struct = Box::new(LibsqlDatabaseConnection { conn: connection });
+            let db_struct = Box::new(LibsqlDatabaseConnection::DbOpen(connection));
             let j_abstract = JanetAbstract::new(db_struct);
             Janet::j_abstract(j_abstract)
         }
@@ -155,9 +158,27 @@ fn open_remote_db(_args: &mut [Janet]) -> Janet {
     Janet::nil()
 }
 
+fn close_boxed_db(ptr: *mut LibsqlDatabaseConnection) {
+    unsafe {
+        (*ptr) = LibsqlDatabaseConnection::DbClose;
+    }
+}
+
+fn close_db_internal(args: &mut [Janet]) -> Result<Janet, String> {
+    let abstract_db = try_get_janet_abstract(args, 0)?;
+    let libsql_db_conn: Box<LibsqlDatabaseConnection> =
+        LibsqlDatabaseConnection::new_from_janet_abstract(abstract_db)?;
+    let ptr = Box::leak(libsql_db_conn);
+    close_boxed_db(ptr);
+    Ok(Janet::nil())
+}
+
 #[janet_fn(arity(fix(1)))]
-fn close_db(_args: &mut [Janet]) -> Janet {
-    Janet::nil()
+fn close_db(args: &mut [Janet]) -> Janet {
+    match close_db_internal(args) {
+        Ok(janet) => janet,
+        Err(msg) => jpanic!("Error while closing database: {}", msg),
+    }
 }
 
 fn handle_execute_internal(args: &mut [Janet]) -> Result<Janet, String> {
@@ -171,22 +192,23 @@ fn handle_execute_internal(args: &mut [Janet]) -> Result<Janet, String> {
     });
 
     let libsql_db_struct = LibsqlDatabaseConnection::new_from_janet_abstract(abstract_db)?;
+    let output = match libsql_db_struct.as_ref() {
+        LibsqlDatabaseConnection::DbOpen(conn) => {
+            let exec_fut = conn.execute(&query_string, params_from_iter(arguments));
 
-    let exec_fut = libsql_db_struct
-        .conn
-        .execute(&query_string, params_from_iter(arguments));
+            match executor::block_on(exec_fut) {
+                Ok(_) => Ok(Janet::nil()),
+                Err(err) => {
+                    let err_msg = format!("Error while executing query : {}", err.to_string());
+                    Err(err_msg.to_string())
+                }
+            }
+        }
+        LibsqlDatabaseConnection::DbClose => Err("Database is in a closed state".to_string()),
+    };
 
-    match executor::block_on(exec_fut) {
-        Ok(_) => {
-            Box::leak(libsql_db_struct);
-            Ok(Janet::nil())
-        }
-        Err(err) => {
-            Box::leak(libsql_db_struct);
-            let err_msg = format!("Error while executing query : {}", err.to_string());
-            Err(err_msg.to_string())
-        }
-    }
+    Box::leak(libsql_db_struct);
+    output
 }
 
 fn map_libsql_to_janet(input: libsql::Value) -> Janet {
@@ -214,38 +236,42 @@ fn handle_query_internal(args: &mut [Janet]) -> Result<Janet, String> {
 
     let libsql_db_struct = LibsqlDatabaseConnection::new_from_janet_abstract(abstract_db)?;
 
-    let query_fut = libsql_db_struct
-        .conn
-        .query(&query_string, params_from_iter(arguments));
-
-    match executor::block_on(query_fut) {
-        Ok(mut rows) => {
-            let mut output_list = JanetArray::new();
-            while let Ok(opt_row) = executor::block_on(rows.next()) {
-                if let Some(row) = opt_row {
-                    let col_count = row.column_count();
-                    let capacity: usize = col_count as usize;
-                    let mut row_j_array = JanetArray::with_capacity(capacity);
-                    for idx in 0..col_count {
-                        if let Ok(val) = row.get_value(idx) {
-                            let mapped = map_libsql_to_janet(val);
-                            row_j_array.push(mapped);
+    let output = match libsql_db_struct.as_ref() {
+        LibsqlDatabaseConnection::DbOpen(conn) => {
+            let query_fut = conn.query(&query_string, params_from_iter(arguments));
+            match executor::block_on(query_fut) {
+                Ok(mut rows) => {
+                    let mut output_list = JanetArray::new();
+                    while let Ok(opt_row) = executor::block_on(rows.next()) {
+                        if let Some(row) = opt_row {
+                            let col_count = row.column_count();
+                            let capacity: usize = col_count as usize;
+                            let mut row_j_array = JanetArray::with_capacity(capacity);
+                            for idx in 0..col_count {
+                                if let Ok(val) = row.get_value(idx) {
+                                    let mapped = map_libsql_to_janet(val);
+                                    row_j_array.push(mapped);
+                                }
+                            }
+                            output_list.push(Janet::array(row_j_array));
+                        } else {
+                            break;
                         }
                     }
-                    output_list.push(Janet::array(row_j_array));
-                } else {
-                    break;
+                    Ok(Janet::array(output_list))
+                }
+                Err(err) => {
+                    let err_msg = format!("Error while executing query : {}", err.to_string());
+                    Err(err_msg)
                 }
             }
-            Box::leak(libsql_db_struct);
-            Ok(Janet::array(output_list))
         }
-        Err(err) => {
-            Box::leak(libsql_db_struct);
-            let err_msg = format!("Error while performing query : {}", err.to_string());
-            Err(err_msg.to_string())
+        LibsqlDatabaseConnection::DbClose => {
+            Err("Cannot perform query on a closed connection.".to_string())
         }
-    }
+    };
+    Box::leak(libsql_db_struct);
+    output
 }
 
 #[janet_fn(arity(fix(3)))]
