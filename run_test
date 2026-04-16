@@ -1,5 +1,7 @@
 #! /usr/bin/env janet
 
+(use dotenv)
+
 (def clean_arg
   (get (dyn :args) 1))
 
@@ -16,63 +18,16 @@
 
 (os/execute @["jpm" "build"] :p)
 
-(import ./build/hydra :as db)
 
-(print "OPENING IN MEMORY DATABASE")
-(var in-memory-local
-  (db/open-local-db ":memory:"))
+(import ./tests/in_memory_db_tests :as memory-test)
+(import ./tests/in_file_db_tests :as file-test)
 
-(print "RUNNING IN MEMORY TEST")
-(print "CREATING TABLE")
-(db/execute in-memory-local "create table users (email TEXT);" @[])
-(print "TABLE CREATED")
-(print "")
+(print "...")
 
-(print "INSERTING VALUES INTO TABLE")
-(db/execute in-memory-local
-  "insert into users (email) values (?1),(?2),(?3);"
-  @["testone@test.com" "testtwo@test.com" "testthree@test.com"])
+(memory-test/execute-in-memory-test)
 
-(print "")
-(print "CLOSING IN MEMORY CONNECTION")
-(db/close-db in-memory-local)
+(file-test/execute-in-file-test)
 
-(protect
-  (db/execute in-memory-local
-    "create table users(email TEXT);" @[])
-    (print "expected failure..."))
-
-(print "OPENING IN DISK DATABASE")
-(var in-disk-local
-  (db/open-local-db "./test.db"))
-
-(print "RUNNING IN DISK TEST")
-(print "CREATING TABLE")
-(db/execute in-disk-local "create table users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT);" @[])
-(print "TABLE CREATED")
-(print "")
-
-(print "INSERTING VALUES INTO TABLE")
-(db/execute in-disk-local
-  "insert into users (email) values (?1),(?2),(?3);"
-  @["testone@test.com" "testtwo@test.com" "testthree@test.com"])
-
-(print "QUERYING TABLE")
-(def query-result
-  (db/query in-disk-local "select * from users where id > ?1" @[1]))
-
-(print "  ID  " "  |  "  "  email")
-(each row query-result
-    (print (get row 0) " | " (get row 1)))
- 
-(print "")
-(print "CLOSING DATABASE")
-(db/close-db in-disk-local)
-
-(protect
-  (db/execute in-disk-local "create table test (value TEXT);" @[])
-  (print "FAILED"))
-
-(file/read stdin :line)
+(print "...")
 
 (print "ENDING TEST")

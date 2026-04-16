@@ -153,9 +153,34 @@ fn open_local_db(args: &mut [Janet]) -> Janet {
     }
 }
 
+fn open_remote_db_internal(args: &mut [Janet]) -> Result<Janet, String> {
+    let db_url: String = try_get_janet_string(args, 0)?;
+    let db_access_token: String = try_get_janet_string(args, 1)?;
+
+    let db_fut = libsql::Builder::new_remote(db_url, db_access_token).build();
+    match executor::block_on(db_fut) {
+        Ok(db) => {
+            let connection = db.connect().unwrap();
+            let db_struct = Box::new(LibsqlDatabaseConnection::DbOpen(connection));
+            let j_abstract = JanetAbstract::new(db_struct);
+            Ok(Janet::j_abstract(j_abstract))
+        }
+        Err(err) => {
+            let err_msg = format!(
+                "Failed to connect to database : Reason -> {}",
+                err.to_string()
+            );
+            Err(err_msg)
+        }
+    }
+}
+
 #[janet_fn(arity(fix(2)))]
-fn open_remote_db(_args: &mut [Janet]) -> Janet {
-    Janet::nil()
+fn open_remote_db(args: &mut [Janet]) -> Janet {
+    match open_remote_db_internal(args) {
+        Ok(j_abstract) => j_abstract,
+        Err(error) => jpanic!("{}", error),
+    }
 }
 
 fn close_boxed_db(ptr: *mut LibsqlDatabaseConnection) {
@@ -192,6 +217,7 @@ fn handle_execute_internal(args: &mut [Janet]) -> Result<Janet, String> {
     });
 
     let libsql_db_struct = LibsqlDatabaseConnection::new_from_janet_abstract(abstract_db)?;
+    println!("EXECUTING");
     let output = match libsql_db_struct.as_ref() {
         LibsqlDatabaseConnection::DbOpen(conn) => {
             let exec_fut = conn.execute(&query_string, params_from_iter(arguments));
